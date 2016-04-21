@@ -16,6 +16,7 @@ S3 object key can be composed of another column.
 - **data_column**: Column for object's body.
 - **aws_access_key_id**: (optional) AWS access key id. If not given, [DefaultAWSCredentialsProviderChain](http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/auth/DefaultAWSCredentialsProviderChain.html) is used to get credentials.
 - **aws_secret_access_key**: (optional) AWS secret access key. Required if `aws_access_key_id` is given.
+- **base64**: (default false) If true, decode the value as Base64 before uploading.
 
 ## Example
 

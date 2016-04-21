@@ -3,6 +3,7 @@ package org.embulk.output.s3_per_record;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -29,6 +30,7 @@ import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.transfer.TransferManager;
 import com.amazonaws.services.s3.transfer.Upload;
+import com.amazonaws.util.Base64;
 import com.google.common.base.Optional;
 
 
@@ -63,6 +65,11 @@ public class S3PerRecordOutputPlugin
         @Config("aws_secret_access_key")
         @ConfigDefault("null")
         Optional<String> getAwsSecretAccessKey();
+
+        // Enable Base64 decoding
+        @Config("base64")
+        @ConfigDefault("false")
+        boolean getBase64();
     }
 
     @Override
@@ -107,12 +114,14 @@ public class S3PerRecordOutputPlugin
         private final Column dataColumn;
         private final Schema schema;
         private List<Upload> uploads;
+        private final boolean decodeBase64;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
             this.schema = schema;
             bucket = task.getBucket();
             keyPattern = makeKeyPattern(task.getKey());
             dataColumn = schema.lookupColumn(task.getDataColumn());
+            decodeBase64 = task.getBase64();
 
             AWSCredentials credentials;
             if (task.getAwsAccessKeyId().isPresent() && task.getAwsSecretAccessKey().isPresent()) {
@@ -157,7 +166,12 @@ public class S3PerRecordOutputPlugin
                 String key = buildKey(pageReader);
 
                 String payload = pageReader.getString(dataColumn);
-                byte[] payloadBytes = payload.getBytes();
+                byte[] payloadBytes;
+                if (decodeBase64) {
+                    payloadBytes = Base64.decode(payload);
+                } else {
+                    payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
+                }
                 ObjectMetadata metadata = new ObjectMetadata();
                 metadata.setContentLength(payloadBytes.length);
 
