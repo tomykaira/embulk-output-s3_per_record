@@ -21,7 +21,7 @@ targetCompatibility = 1.7
 dependencies {
     compile  "org.embulk:embulk-core:0.8.8"
     provided "org.embulk:embulk-core:0.8.8"
-    // compile "YOUR_JAR_DEPENDENCY_GROUP:YOUR_JAR_DEPENDENCY_MODULE:YOUR_JAR_DEPENDENCY_VERSION"
+    compile  'com.amazonaws:aws-java-sdk-s3:1.10.71'
     testCompile "junit:junit:4.+"
 }
 
@@ -75,16 +75,15 @@ Gem::Specification.new do |spec|
   spec.version       = "${project.version}"
   spec.authors       = ["tomykaira"]
   spec.summary       = %[S3 Per Record output plugin for Embulk]
-  spec.description   = %[Dumps records to S3 Per Record.]
+  spec.description   = %[Upload a column's value to S3 as one S3 object per row.]
   spec.email         = ["tomykaira@gmail.com"]
   spec.licenses      = ["MIT"]
-  # TODO set this: spec.homepage      = "https://github.com/tomykaira/embulk-output-s3_per_record"
+  spec.homepage      = "https://github.com/tomykaira/embulk-output-s3_per_record"
 
   spec.files         = `git ls-files`.split("\n") + Dir["classpath/*.jar"]
   spec.test_files    = spec.files.grep(%r"^(test|spec)/")
   spec.require_paths = ["lib"]
 
-  #spec.add_dependency 'YOUR_GEM_DEPENDENCY', ['~> YOUR_GEM_DEPENDENCY_VERSION']
   spec.add_development_dependency 'bundler', ['~> 1.0']
   spec.add_development_dependency 'rake', ['>= 10.0']
 end
