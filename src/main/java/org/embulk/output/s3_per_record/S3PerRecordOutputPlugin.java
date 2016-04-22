@@ -113,7 +113,6 @@ public class S3PerRecordOutputPlugin
         private final List<KeyPart> keyPattern;
         private final Column dataColumn;
         private final Schema schema;
-        private List<Upload> uploads;
         private final boolean decodeBase64;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
@@ -130,8 +129,6 @@ public class S3PerRecordOutputPlugin
                 credentials = new DefaultAWSCredentialsProviderChain().getCredentials();
             }
             transferManager = new TransferManager(credentials);
-
-            uploads = new ArrayList<>();
         }
 
         private List<KeyPart> makeKeyPattern(final String key) {
@@ -177,8 +174,8 @@ public class S3PerRecordOutputPlugin
 
                 try (InputStream is = new ByteArrayInputStream(payloadBytes)) {
                     Upload upload = transferManager.upload(bucket, key, is, metadata);
-                    uploads.add(upload);
-                } catch (IOException e) {
+                    upload.waitForUploadResult();
+                } catch (InterruptedException | IOException e) {
                     throw new RuntimeException(e);
                 }
             }
@@ -195,15 +192,7 @@ public class S3PerRecordOutputPlugin
         @Override
         public void finish()
         {
-            try {
-                for (Upload upload : uploads) {
-                    upload.waitForUploadResult();
-                }
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            } finally {
-                close();
-            }
+            close();
         }
 
         @Override
@@ -211,14 +200,12 @@ public class S3PerRecordOutputPlugin
         {
             if (pageReader != null) {
                 pageReader.close();
+                pageReader = null;
             }
         }
 
         @Override
         public void abort() {
-            for (Upload upload : uploads) {
-                upload.abort();
-            }
         }
 
         @Override
