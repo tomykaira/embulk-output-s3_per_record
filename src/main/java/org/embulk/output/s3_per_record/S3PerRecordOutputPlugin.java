@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.validation.constraints.NotNull;
 
@@ -32,6 +33,7 @@ import com.amazonaws.services.s3.transfer.TransferManager;
 import com.amazonaws.services.s3.transfer.Upload;
 import com.amazonaws.util.Base64;
 import com.google.common.base.Optional;
+import org.slf4j.Logger;
 
 
 public class S3PerRecordOutputPlugin
@@ -40,6 +42,11 @@ public class S3PerRecordOutputPlugin
 
     public static final String KEY_COLUMN_START_MARKER = "${";
     public static final String KEY_COLUMN_END_MARKER = "}";
+
+    private static final Logger logger = Exec.getLogger(S3PerRecordOutputPlugin.class);
+    private static volatile long nextLoggingRowCount = 1000;
+    private static AtomicLong processedRows = new AtomicLong(0);
+    private static long startTime = System.currentTimeMillis();
 
     public interface PluginTask
             extends Task
@@ -129,6 +136,7 @@ public class S3PerRecordOutputPlugin
                 credentials = new DefaultAWSCredentialsProviderChain().getCredentials();
             }
             transferManager = new TransferManager(credentials);
+            logger.info(String.format("Start Upload to bucket \"%s\"", bucket));
         }
 
         private List<KeyPart> makeKeyPattern(final String key) {
@@ -175,6 +183,12 @@ public class S3PerRecordOutputPlugin
                 try (InputStream is = new ByteArrayInputStream(payloadBytes)) {
                     Upload upload = transferManager.upload(bucket, key, is, metadata);
                     upload.waitForUploadResult();
+                    processedRows.getAndIncrement();
+                    if (processedRows.longValue() == nextLoggingRowCount) {
+                        double seconds = (System.currentTimeMillis() - startTime) / 1000.0;
+                        logger.info(String.format("> Uploaded %,d rows in %.2f seconds", nextLoggingRowCount, seconds));
+                        nextLoggingRowCount *= 2;
+                    }
                 } catch (InterruptedException | IOException e) {
                     throw new RuntimeException(e);
                 }
