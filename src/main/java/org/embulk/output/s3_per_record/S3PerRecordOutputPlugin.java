@@ -183,10 +183,10 @@ public class S3PerRecordOutputPlugin
                 try (InputStream is = new ByteArrayInputStream(payloadBytes)) {
                     Upload upload = transferManager.upload(bucket, key, is, metadata);
                     upload.waitForUploadResult();
-                    processedRows.getAndIncrement();
-                    if (processedRows.longValue() == nextLoggingRowCount) {
+                    long rows = processedRows.incrementAndGet();
+                    if (rows == nextLoggingRowCount) {
                         double seconds = (System.currentTimeMillis() - startTime) / 1000.0;
-                        logger.info(String.format("> Uploaded %,d rows in %.2f seconds", nextLoggingRowCount, seconds));
+                        logger.info(String.format("> Uploaded %,d rows in %.2f seconds", rows, seconds));
                         nextLoggingRowCount *= 2;
                     }
                 } catch (InterruptedException | IOException e) {
