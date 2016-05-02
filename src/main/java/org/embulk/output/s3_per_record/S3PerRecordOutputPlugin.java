@@ -136,7 +136,7 @@ public class S3PerRecordOutputPlugin
                 credentials = new DefaultAWSCredentialsProviderChain().getCredentials();
             }
             transferManager = new TransferManager(credentials);
-            logger.info(String.format("Start Upload to bucket \"%s\"", bucket));
+            logger.info("Start Upload to bucket \"{}\"", bucket);
         }
 
         private List<KeyPart> makeKeyPattern(final String key) {
