@@ -183,6 +183,7 @@ public class S3PerRecordOutputPlugin
                 metadata.setContentLength(payloadBytes.length);
 
                 int retryCount = 0;
+                int retryWait = 1000; // ms
                 while (true) {
                     try (InputStream is = new ByteArrayInputStream(payloadBytes)) {
                         Upload upload = transferManager.upload(bucket, key, is, metadata);
@@ -202,7 +203,13 @@ public class S3PerRecordOutputPlugin
                            throw e;
 
                         retryCount++;
-                        logger.warn(String.format("> Upload failed by %s, Retry Uploading (%d of %d)", e.getMessage(), retryCount, retryLimit));
+                        logger.warn(String.format("> Upload failed by %s, Retry Uploading in after %d ms (%d of %d)", e.getMessage(), retryWait, retryCount, retryLimit));
+                        try {
+                            Thread.sleep(retryWait);
+                            retryWait = retryWait * 2;
+                        } catch (InterruptedException e1) {
+                            throw new RuntimeException(e1);
+                        }
                     } catch (InterruptedException | IOException e) {
                         throw new RuntimeException(e);
                     }
