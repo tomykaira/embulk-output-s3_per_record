@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import javax.validation.constraints.NotNull;
 
+import com.amazonaws.services.s3.model.AmazonS3Exception;
 import org.embulk.config.Config;
 import org.embulk.config.ConfigDefault;
 import org.embulk.config.ConfigDiff;
@@ -121,6 +122,7 @@ public class S3PerRecordOutputPlugin
         private final Column dataColumn;
         private final Schema schema;
         private final boolean decodeBase64;
+        private final int retryLimit = 2;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
             this.schema = schema;
@@ -180,17 +182,30 @@ public class S3PerRecordOutputPlugin
                 ObjectMetadata metadata = new ObjectMetadata();
                 metadata.setContentLength(payloadBytes.length);
 
-                try (InputStream is = new ByteArrayInputStream(payloadBytes)) {
-                    Upload upload = transferManager.upload(bucket, key, is, metadata);
-                    upload.waitForUploadResult();
-                    long rows = processedRows.incrementAndGet();
-                    if (rows == nextLoggingRowCount) {
-                        double seconds = (System.currentTimeMillis() - startTime) / 1000.0;
-                        logger.info(String.format("> Uploaded %,d rows in %.2f seconds", rows, seconds));
-                        nextLoggingRowCount *= 2;
+                int retryCount = 0;
+                while (true) {
+                    try (InputStream is = new ByteArrayInputStream(payloadBytes)) {
+                        Upload upload = transferManager.upload(bucket, key, is, metadata);
+                        upload.waitForUploadResult();
+                        long rows = processedRows.incrementAndGet();
+                        if (rows == nextLoggingRowCount) {
+                            double seconds = (System.currentTimeMillis() - startTime) / 1000.0;
+                            logger.info(String.format("> Uploaded %,d rows in %.2f seconds", rows, seconds));
+                            nextLoggingRowCount *= 2;
+                        }
+                        break;
+                    } catch (AmazonS3Exception e) {
+                        if (!e.isRetryable())
+                            throw e;
+
+                        if (retryCount > retryLimit)
+                           throw e;
+
+                        retryCount++;
+                        logger.warn(String.format("> Upload failed by %s, Retry Uploading (%d of %d)", e.getMessage(), retryCount, retryLimit));
+                    } catch (InterruptedException | IOException e) {
+                        throw new RuntimeException(e);
                     }
-                } catch (InterruptedException | IOException e) {
-                    throw new RuntimeException(e);
                 }
             }
         }
