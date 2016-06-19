@@ -208,7 +208,7 @@ public class S3PerRecordOutputPlugin
                             Thread.sleep(retryWait);
                             retryWait = retryWait * 2;
                         } catch (InterruptedException e1) {
-                            throw new RuntimeException(e1);
+                            Thread.currentThread().interrupt();
                         }
                     } catch (InterruptedException | IOException e) {
                         throw new RuntimeException(e);
