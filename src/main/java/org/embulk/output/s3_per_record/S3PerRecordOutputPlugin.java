@@ -78,6 +78,11 @@ public class S3PerRecordOutputPlugin
         @Config("base64")
         @ConfigDefault("false")
         boolean getBase64();
+
+        // Set retry limit. Default is 2.
+        @Config("retry_limit")
+        @ConfigDefault("2")
+        Integer getRetryLimit();
     }
 
     @Override
@@ -122,7 +127,7 @@ public class S3PerRecordOutputPlugin
         private final Column dataColumn;
         private final Schema schema;
         private final boolean decodeBase64;
-        private final int retryLimit = 2;
+        private final int retryLimit;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
             this.schema = schema;
@@ -130,6 +135,7 @@ public class S3PerRecordOutputPlugin
             keyPattern = makeKeyPattern(task.getKey());
             dataColumn = schema.lookupColumn(task.getDataColumn());
             decodeBase64 = task.getBase64();
+            retryLimit = task.getRetryLimit();
 
             AWSCredentials credentials;
             if (task.getAwsAccessKeyId().isPresent() && task.getAwsSecretAccessKey().isPresent()) {
