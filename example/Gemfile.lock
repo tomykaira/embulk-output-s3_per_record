@@ -1,0 +1,13 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    embulk-parser-jsonl (0.2.0)
+
+PLATFORMS
+  java
+
+DEPENDENCIES
+  embulk-parser-jsonl
+
+BUNDLED WITH
+   1.10.6

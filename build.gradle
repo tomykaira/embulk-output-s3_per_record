@@ -22,6 +22,7 @@ dependencies {
     compile  "org.embulk:embulk-core:0.8.8"
     provided "org.embulk:embulk-core:0.8.8"
     compile  'com.amazonaws:aws-java-sdk-s3:1.10.71'
+    compile  'org.msgpack:jackson-dataformat-msgpack:0.8.3'
     testCompile "junit:junit:4.+"
 }
 

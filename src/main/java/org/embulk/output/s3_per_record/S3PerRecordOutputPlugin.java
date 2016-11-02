@@ -6,19 +6,24 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
 import javax.validation.constraints.NotNull;
 
 import com.amazonaws.services.s3.model.AmazonS3Exception;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import org.embulk.config.Config;
 import org.embulk.config.ConfigDefault;
 import org.embulk.config.ConfigDiff;
+import org.embulk.config.ConfigException;
 import org.embulk.config.ConfigSource;
 import org.embulk.config.Task;
 import org.embulk.config.TaskReport;
 import org.embulk.config.TaskSource;
 import org.embulk.spi.Column;
+import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.Exec;
 import org.embulk.spi.OutputPlugin;
 import org.embulk.spi.Page;
@@ -34,6 +39,10 @@ import com.amazonaws.services.s3.transfer.TransferManager;
 import com.amazonaws.services.s3.transfer.Upload;
 import com.amazonaws.util.Base64;
 import com.google.common.base.Optional;
+import org.embulk.spi.time.Timestamp;
+import org.msgpack.core.MessageBufferPacker;
+import org.msgpack.core.MessagePack;
+import org.msgpack.value.Value;
 import org.slf4j.Logger;
 
 
@@ -78,6 +87,10 @@ public class S3PerRecordOutputPlugin
         @Config("base64")
         @ConfigDefault("false")
         boolean getBase64();
+
+        @Config("serializer")
+        @ConfigDefault("null")
+        Optional<Serializer> getSerializer();
 
         // Set retry limit. Default is 2.
         @Config("retry_limit")
@@ -128,6 +141,7 @@ public class S3PerRecordOutputPlugin
         private final Schema schema;
         private final boolean decodeBase64;
         private final int retryLimit;
+        private final Optional<Serializer> format;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
             this.schema = schema;
@@ -136,6 +150,7 @@ public class S3PerRecordOutputPlugin
             dataColumn = schema.lookupColumn(task.getDataColumn());
             decodeBase64 = task.getBase64();
             retryLimit = task.getRetryLimit();
+            format = task.getSerializer();
 
             AWSCredentials credentials;
             if (task.getAwsAccessKeyId().isPresent() && task.getAwsSecretAccessKey().isPresent()) {
@@ -177,13 +192,80 @@ public class S3PerRecordOutputPlugin
 
             while (pageReader.nextRecord()) {
                 String key = buildKey(pageReader);
+                final byte[] payloadBytes;
 
-                String payload = pageReader.getString(dataColumn);
-                byte[] payloadBytes;
-                if (decodeBase64) {
-                    payloadBytes = Base64.decode(payload);
+                if (format.orNull() == Serializer.MSGPACK) {
+                    final MessageBufferPacker packer = MessagePack.newDefaultBufferPacker();
+
+                    dataColumn.visit(new ColumnVisitor() {
+                        @Override
+                        public void booleanColumn(Column column) {
+                            boolean value = pageReader.getBoolean(dataColumn);
+                            try {
+                                packer.packBoolean(value);
+                            } catch (IOException e) {
+                                throw new RuntimeException("cannot write to msgpack");
+                            }
+                        }
+
+                        @Override
+                        public void longColumn(Column column) {
+                            long value = pageReader.getLong(dataColumn);
+                            try {
+                                packer.packLong(value);
+                            } catch (IOException e) {
+                                throw new RuntimeException("cannot write to msgpack");
+                            }
+                        }
+
+                        @Override
+                        public void doubleColumn(Column column) {
+                            double value = pageReader.getDouble(dataColumn);
+                            try {
+                                packer.packDouble(value);
+                            } catch (IOException e) {
+                                throw new RuntimeException("cannot write to msgpack");
+                            }
+                        }
+
+                        @Override
+                        public void stringColumn(Column column) {
+                            String value = pageReader.getString(dataColumn);
+                            try {
+                                packer.packString(value);
+                            } catch (IOException e) {
+                                throw new RuntimeException("cannot write to msgpack");
+                            }
+                        }
+
+                        @Override
+                        public void timestampColumn(Column column) {
+                            Timestamp value = pageReader.getTimestamp(dataColumn);
+                            try {
+                                packer.packLong(value.toEpochMilli());
+                            } catch (IOException e) {
+                                throw new RuntimeException("cannot write to msgpack");
+                            }
+                        }
+
+                        @Override
+                        public void jsonColumn(Column column) {
+                            Value value = pageReader.getJson(column);
+                            try {
+                                value.writeTo(packer);
+                            } catch (IOException e) {
+                                throw new RuntimeException("cannot write to msgpack");
+                            }
+                        }
+                    });
+                    payloadBytes = packer.toByteArray();
                 } else {
-                    payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
+                    String payload = pageReader.getString(dataColumn);
+                    if (decodeBase64) {
+                        payloadBytes = Base64.decode(payload);
+                    } else {
+                        payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
+                    }
                 }
                 ObjectMetadata metadata = new ObjectMetadata();
                 metadata.setContentLength(payloadBytes.length);
@@ -284,6 +366,28 @@ public class S3PerRecordOutputPlugin
         @Override
         public String resolve(@NotNull PageReader reader) {
             return reader.getString(column);
+        }
+    }
+
+    public enum Serializer {
+        MSGPACK;
+
+        @JsonValue
+        @Override
+        public String toString()
+        {
+            return name().toLowerCase(Locale.ENGLISH);
+        }
+
+        @JsonCreator
+        public static Serializer fromString(String name)
+        {
+            switch(name) {
+                case "msgpack":
+                    return MSGPACK;
+                default:
+                    throw new ConfigException(String.format("Unknown format '%s'. Supported formats are msgpack only", name));
+            }
         }
     }
 }
