@@ -9,7 +9,8 @@ in:
 
 out:
   type: s3_per_record
-  data_column: data
+  data_columns: [data]
+  mode: single_column
   bucket: {{ env.S3_BUCKET }}
   key: "${key}"
   serializer: msgpack

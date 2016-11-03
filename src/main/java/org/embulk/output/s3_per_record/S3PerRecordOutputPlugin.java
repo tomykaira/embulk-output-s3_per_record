@@ -1,19 +1,15 @@
 package org.embulk.output.s3_per_record;
 
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.concurrent.atomic.AtomicLong;
-
-import javax.validation.constraints.NotNull;
-
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.transfer.TransferManager;
+import com.amazonaws.services.s3.transfer.Upload;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
+import com.google.common.base.Optional;
 import org.embulk.config.Config;
 import org.embulk.config.ConfigDefault;
 import org.embulk.config.ConfigDiff;
@@ -30,20 +26,18 @@ import org.embulk.spi.Page;
 import org.embulk.spi.PageReader;
 import org.embulk.spi.Schema;
 import org.embulk.spi.TransactionalPageOutput;
-
-import com.amazonaws.auth.AWSCredentials;
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.amazonaws.services.s3.transfer.TransferManager;
-import com.amazonaws.services.s3.transfer.Upload;
-import com.amazonaws.util.Base64;
-import com.google.common.base.Optional;
-import org.embulk.spi.time.Timestamp;
 import org.msgpack.core.MessageBufferPacker;
 import org.msgpack.core.MessagePack;
-import org.msgpack.value.Value;
 import org.slf4j.Logger;
+
+import javax.validation.constraints.NotNull;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicLong;
 
 
 public class S3PerRecordOutputPlugin
@@ -70,8 +64,9 @@ public class S3PerRecordOutputPlugin
         String getKey();
 
         // Column name.
-        @Config("data_column")
-        String getDataColumn();
+        @Config("data_columns")
+        @ConfigDefault("[]")
+        List<String> getDataColumns();
 
         // AWS access key id.
         @Config("aws_access_key_id")
@@ -83,14 +78,13 @@ public class S3PerRecordOutputPlugin
         @ConfigDefault("null")
         Optional<String> getAwsSecretAccessKey();
 
-        // Enable Base64 decoding
-        @Config("base64")
-        @ConfigDefault("false")
-        boolean getBase64();
-
         @Config("serializer")
-        @ConfigDefault("null")
-        Optional<Serializer> getSerializer();
+        @ConfigDefault("msgpack")
+        Serializer getSerializer();
+
+        @Config("mode")
+        @ConfigDefault("multi_column")
+        Mode getMode();
 
         // Set retry limit. Default is 2.
         @Config("retry_limit")
@@ -137,20 +131,20 @@ public class S3PerRecordOutputPlugin
         private PageReader pageReader;
         private final String bucket;
         private final List<KeyPart> keyPattern;
-        private final Column dataColumn;
+        private final List<String> dataColumns;
         private final Schema schema;
-        private final boolean decodeBase64;
         private final int retryLimit;
-        private final Optional<Serializer> format;
+        private final Serializer serializer;
+        private final Mode mode;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
             this.schema = schema;
             bucket = task.getBucket();
             keyPattern = makeKeyPattern(task.getKey());
-            dataColumn = schema.lookupColumn(task.getDataColumn());
-            decodeBase64 = task.getBase64();
+            dataColumns = task.getDataColumns();
             retryLimit = task.getRetryLimit();
-            format = task.getSerializer();
+            serializer = task.getSerializer();
+            mode = task.getMode();
 
             AWSCredentials credentials;
             if (task.getAwsAccessKeyId().isPresent() && task.getAwsSecretAccessKey().isPresent()) {
@@ -194,78 +188,16 @@ public class S3PerRecordOutputPlugin
                 String key = buildKey(pageReader);
                 final byte[] payloadBytes;
 
-                if (format.orNull() == Serializer.MSGPACK) {
-                    final MessageBufferPacker packer = MessagePack.newDefaultBufferPacker();
-
-                    dataColumn.visit(new ColumnVisitor() {
-                        @Override
-                        public void booleanColumn(Column column) {
-                            boolean value = pageReader.getBoolean(dataColumn);
-                            try {
-                                packer.packBoolean(value);
-                            } catch (IOException e) {
-                                throw new RuntimeException("cannot write to msgpack");
-                            }
-                        }
-
-                        @Override
-                        public void longColumn(Column column) {
-                            long value = pageReader.getLong(dataColumn);
-                            try {
-                                packer.packLong(value);
-                            } catch (IOException e) {
-                                throw new RuntimeException("cannot write to msgpack");
-                            }
-                        }
-
-                        @Override
-                        public void doubleColumn(Column column) {
-                            double value = pageReader.getDouble(dataColumn);
-                            try {
-                                packer.packDouble(value);
-                            } catch (IOException e) {
-                                throw new RuntimeException("cannot write to msgpack");
-                            }
-                        }
-
-                        @Override
-                        public void stringColumn(Column column) {
-                            String value = pageReader.getString(dataColumn);
-                            try {
-                                packer.packString(value);
-                            } catch (IOException e) {
-                                throw new RuntimeException("cannot write to msgpack");
-                            }
-                        }
-
-                        @Override
-                        public void timestampColumn(Column column) {
-                            Timestamp value = pageReader.getTimestamp(dataColumn);
-                            try {
-                                packer.packLong(value.toEpochMilli());
-                            } catch (IOException e) {
-                                throw new RuntimeException("cannot write to msgpack");
-                            }
-                        }
-
-                        @Override
-                        public void jsonColumn(Column column) {
-                            Value value = pageReader.getJson(column);
-                            try {
-                                value.writeTo(packer);
-                            } catch (IOException e) {
-                                throw new RuntimeException("cannot write to msgpack");
-                            }
-                        }
-                    });
-                    payloadBytes = packer.toByteArray();
+                if (mode == Mode.SINGLE_COLUMN) {
+                    S3PerRecordOutputColumnVisitor visitor = new MessagePackSingleColumnVisitor(pageReader);
+                    schema.lookupColumn(dataColumns.get(0)).visit(visitor);
+                    payloadBytes = visitor.getByteArray();
                 } else {
-                    String payload = pageReader.getString(dataColumn);
-                    if (decodeBase64) {
-                        payloadBytes = Base64.decode(payload);
-                    } else {
-                        payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
+                    S3PerRecordOutputColumnVisitor visitor = new MessagePackMultiColumnVisitor(pageReader);
+                    for (String columnName : dataColumns) {
+                        schema.lookupColumn(columnName).visit(visitor);
                     }
+                    payloadBytes = visitor.getByteArray();
                 }
                 ObjectMetadata metadata = new ObjectMetadata();
                 metadata.setContentLength(payloadBytes.length);
@@ -387,6 +319,31 @@ public class S3PerRecordOutputPlugin
                     return MSGPACK;
                 default:
                     throw new ConfigException(String.format("Unknown format '%s'. Supported formats are msgpack only", name));
+            }
+        }
+    }
+
+    public enum Mode {
+        SINGLE_COLUMN,
+        MULTI_COLUMN;
+
+        @JsonValue
+        @Override
+        public String toString()
+        {
+            return name().toLowerCase(Locale.ENGLISH);
+        }
+
+        @JsonCreator
+        public static Mode fromString(String name)
+        {
+            switch(name) {
+                case "single_column":
+                    return SINGLE_COLUMN;
+                case "multi_column":
+                    return MULTI_COLUMN;
+                default:
+                    throw new ConfigException(String.format("Unknown mode '%s'. Supported formats are single_column, multi_column", name));
             }
         }
     }

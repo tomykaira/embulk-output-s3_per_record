@@ -1,0 +1,21 @@
+in:
+  type: file
+  path_prefix: "example_multicolumn.json"
+  parser:
+    type: jsonl
+    columns:
+      - {name: "key", type: "string"}
+      - {name: "data1", type: "json"}
+      - {name: "data2", type: "json"}
+      - {name: "data3", type: "long"}
+
+out:
+  type: s3_per_record
+  data_columns:
+    - data1
+    - data2
+    - data3
+  mode: multi_column
+  bucket: {{ env.S3_BUCKET }}
+  key: "${key}"
+  serializer: msgpack
