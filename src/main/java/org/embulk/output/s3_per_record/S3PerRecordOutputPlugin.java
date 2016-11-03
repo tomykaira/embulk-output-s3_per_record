@@ -30,6 +30,8 @@ import org.embulk.spi.Page;
 import org.embulk.spi.PageReader;
 import org.embulk.spi.Schema;
 import org.embulk.spi.TransactionalPageOutput;
+import org.embulk.spi.time.TimestampFormatter;
+import org.embulk.spi.util.Timestamps;
 import org.slf4j.Logger;
 
 import javax.validation.constraints.NotNull;
@@ -39,6 +41,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 
@@ -55,7 +58,7 @@ public class S3PerRecordOutputPlugin
     private static long startTime = System.currentTimeMillis();
 
     public interface PluginTask
-            extends Task
+            extends Task, TimestampFormatter.Task
     {
         // S3 bucket name.
         @Config("bucket")
@@ -92,7 +95,15 @@ public class S3PerRecordOutputPlugin
         @Config("retry_limit")
         @ConfigDefault("2")
         Integer getRetryLimit();
+
+        @Config("column_options")
+        @ConfigDefault("{}")
+        Map<String, TimestampColumnOption> getColumnOptions();
     }
+
+    public interface TimestampColumnOption
+            extends Task, TimestampFormatter.TimestampColumnOption
+    { }
 
     @Override
     public ConfigDiff transaction(ConfigSource config,
@@ -138,6 +149,7 @@ public class S3PerRecordOutputPlugin
         private final int retryLimit;
         private final Serializer serializer;
         private final Mode mode;
+        private final TimestampFormatter[] timestampFormatters;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
             this.schema = schema;
@@ -147,6 +159,7 @@ public class S3PerRecordOutputPlugin
             retryLimit = task.getRetryLimit();
             serializer = task.getSerializer();
             mode = task.getMode();
+            timestampFormatters = Timestamps.newTimestampColumnFormatters(task, schema, task.getColumnOptions());
 
             AWSCredentials credentials;
             if (task.getAwsAccessKeyId().isPresent() && task.getAwsSecretAccessKey().isPresent()) {
@@ -188,7 +201,7 @@ public class S3PerRecordOutputPlugin
 
             while (pageReader.nextRecord()) {
                 final String key = buildKey(pageReader);
-                final byte[] payloadBytes = serializer.serialize(mode, pageReader, schema, dataColumns);
+                final byte[] payloadBytes = serializer.serialize(mode, pageReader, schema, dataColumns, timestampFormatters);
 
                 ObjectMetadata metadata = new ObjectMetadata();
                 metadata.setContentLength(payloadBytes.length);
@@ -295,15 +308,15 @@ public class S3PerRecordOutputPlugin
     public enum Serializer {
         MSGPACK {
             @Override
-            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns) {
+            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns, TimestampFormatter[] timestampFormatters) {
                 S3PerRecordOutputColumnVisitor visitor;
                 switch(mode) {
                     case SINGLE_COLUMN:
-                        visitor = new MessagePackSingleColumnVisitor(reader);
+                        visitor = new MessagePackSingleColumnVisitor(reader, timestampFormatters);
                         schema.lookupColumn(dataColumns.get(0)).visit(visitor);
                         break;
                     case MULTI_COLUMN:
-                        visitor = new MessagePackMultiColumnVisitor(reader);
+                        visitor = new MessagePackMultiColumnVisitor(reader, timestampFormatters);
                         for (String columnName : dataColumns) {
                             schema.lookupColumn(columnName).visit(visitor);
                         }
@@ -316,15 +329,15 @@ public class S3PerRecordOutputPlugin
         },
         JSON {
             @Override
-            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns) {
+            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns, TimestampFormatter[] timestampFormatters) {
                 S3PerRecordOutputColumnVisitor visitor;
                 switch(mode) {
                     case SINGLE_COLUMN:
-                        visitor = new JsonSingleColumnVisitor(reader);
+                        visitor = new JsonSingleColumnVisitor(reader, timestampFormatters);
                         schema.lookupColumn(dataColumns.get(0)).visit(visitor);
                         break;
                     case MULTI_COLUMN:
-                        visitor = new JsonMultiColumnVisitor(reader);
+                        visitor = new JsonMultiColumnVisitor(reader, timestampFormatters);
                         for (String columnName : dataColumns) {
                             schema.lookupColumn(columnName).visit(visitor);
                         }
@@ -336,7 +349,7 @@ public class S3PerRecordOutputPlugin
             }
         };
 
-        public abstract byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns);
+        public abstract byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns, TimestampFormatter[] timestampFormatters);
 
         @JsonValue
         @Override

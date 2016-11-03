@@ -2,6 +2,7 @@ package org.embulk.output.s3_per_record.visitor;
 
 import org.embulk.spi.Column;
 import org.embulk.spi.PageReader;
+import org.embulk.spi.time.TimestampFormatter;
 import org.msgpack.core.MessageBufferPacker;
 import org.msgpack.core.MessagePack;
 import org.msgpack.value.Value;
@@ -12,10 +13,12 @@ import java.nio.charset.StandardCharsets;
 
 public class JsonMultiColumnVisitor implements S3PerRecordOutputColumnVisitor {
     final PageReader reader;
+    final TimestampFormatter[] timestampFormatters;
     public final ValueFactory.MapBuilder builder;
 
-    public JsonMultiColumnVisitor(PageReader reader) {
+    public JsonMultiColumnVisitor(PageReader reader, TimestampFormatter[] timestampFormatters) {
         this.reader = reader;
+        this.timestampFormatters = timestampFormatters;
         this.builder = new ValueFactory.MapBuilder();
     }
 
@@ -56,7 +59,8 @@ public class JsonMultiColumnVisitor implements S3PerRecordOutputColumnVisitor {
     @Override
     public void timestampColumn(Column column) {
         Value columnName = ValueFactory.newString(column.getName());
-        Value value = ValueFactory.newInteger(reader.getTimestamp(column).toEpochMilli());
+        TimestampFormatter formatter = timestampFormatters[column.getIndex()];
+        Value value = ValueFactory.newString(formatter.format(reader.getTimestamp(column)));
         builder.put(columnName, value);
     }
 

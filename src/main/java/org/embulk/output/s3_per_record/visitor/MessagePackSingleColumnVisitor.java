@@ -3,6 +3,7 @@ package org.embulk.output.s3_per_record.visitor;
 import org.embulk.spi.Column;
 import org.embulk.spi.PageReader;
 import org.embulk.spi.time.Timestamp;
+import org.embulk.spi.time.TimestampFormatter;
 import org.msgpack.core.MessageBufferPacker;
 import org.msgpack.core.MessagePack;
 import org.msgpack.value.Value;
@@ -11,10 +12,12 @@ import java.io.IOException;
 
 public class MessagePackSingleColumnVisitor implements S3PerRecordOutputColumnVisitor {
     final PageReader reader;
+    final TimestampFormatter[] timestampFormatters;
     final MessageBufferPacker packer;
 
-    public MessagePackSingleColumnVisitor(PageReader reader) {
+    public MessagePackSingleColumnVisitor(PageReader reader, TimestampFormatter[] timestampFormatters) {
         this.reader = reader;
+        this.timestampFormatters = timestampFormatters;
         this.packer = MessagePack.newDefaultBufferPacker();
     }
 
@@ -65,8 +68,9 @@ public class MessagePackSingleColumnVisitor implements S3PerRecordOutputColumnVi
     @Override
     public void timestampColumn(Column column) {
         Timestamp value = reader.getTimestamp(column);
+        TimestampFormatter formatter = timestampFormatters[column.getIndex()];
         try {
-            packer.packLong(value.toEpochMilli());
+            packer.packString(formatter.format(value));
         } catch (IOException e) {
             throw new RuntimeException("cannot write to msgpack");
         }
