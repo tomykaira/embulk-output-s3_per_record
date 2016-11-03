@@ -1,12 +1,10 @@
-package org.embulk.output.s3_per_record;
+package org.embulk.output.s3_per_record.visitor;
 
 import org.embulk.spi.Column;
-import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.PageReader;
 import org.embulk.spi.time.Timestamp;
 import org.msgpack.core.MessageBufferPacker;
 import org.msgpack.core.MessagePack;
-import org.msgpack.core.MessagePacker;
 import org.msgpack.value.Value;
 
 import java.io.IOException;
@@ -15,7 +13,7 @@ public class MessagePackSingleColumnVisitor implements S3PerRecordOutputColumnVi
     final PageReader reader;
     final MessageBufferPacker packer;
 
-    MessagePackSingleColumnVisitor(PageReader reader) {
+    public MessagePackSingleColumnVisitor(PageReader reader) {
         this.reader = reader;
         this.packer = MessagePack.newDefaultBufferPacker();
     }

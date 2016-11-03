@@ -18,16 +18,18 @@ import org.embulk.config.ConfigSource;
 import org.embulk.config.Task;
 import org.embulk.config.TaskReport;
 import org.embulk.config.TaskSource;
+import org.embulk.output.s3_per_record.visitor.JsonMultiColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.JsonSingleColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.MessagePackMultiColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.MessagePackSingleColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.S3PerRecordOutputColumnVisitor;
 import org.embulk.spi.Column;
-import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.Exec;
 import org.embulk.spi.OutputPlugin;
 import org.embulk.spi.Page;
 import org.embulk.spi.PageReader;
 import org.embulk.spi.Schema;
 import org.embulk.spi.TransactionalPageOutput;
-import org.msgpack.core.MessageBufferPacker;
-import org.msgpack.core.MessagePack;
 import org.slf4j.Logger;
 
 import javax.validation.constraints.NotNull;
@@ -185,20 +187,9 @@ public class S3PerRecordOutputPlugin
             pageReader.setPage(page);
 
             while (pageReader.nextRecord()) {
-                String key = buildKey(pageReader);
-                final byte[] payloadBytes;
+                final String key = buildKey(pageReader);
+                final byte[] payloadBytes = serializer.serialize(mode, pageReader, schema, dataColumns);
 
-                if (mode == Mode.SINGLE_COLUMN) {
-                    S3PerRecordOutputColumnVisitor visitor = new MessagePackSingleColumnVisitor(pageReader);
-                    schema.lookupColumn(dataColumns.get(0)).visit(visitor);
-                    payloadBytes = visitor.getByteArray();
-                } else {
-                    S3PerRecordOutputColumnVisitor visitor = new MessagePackMultiColumnVisitor(pageReader);
-                    for (String columnName : dataColumns) {
-                        schema.lookupColumn(columnName).visit(visitor);
-                    }
-                    payloadBytes = visitor.getByteArray();
-                }
                 ObjectMetadata metadata = new ObjectMetadata();
                 metadata.setContentLength(payloadBytes.length);
 
@@ -302,7 +293,50 @@ public class S3PerRecordOutputPlugin
     }
 
     public enum Serializer {
-        MSGPACK;
+        MSGPACK {
+            @Override
+            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns) {
+                S3PerRecordOutputColumnVisitor visitor;
+                switch(mode) {
+                    case SINGLE_COLUMN:
+                        visitor = new MessagePackSingleColumnVisitor(reader);
+                        schema.lookupColumn(dataColumns.get(0)).visit(visitor);
+                        break;
+                    case MULTI_COLUMN:
+                        visitor = new MessagePackMultiColumnVisitor(reader);
+                        for (String columnName : dataColumns) {
+                            schema.lookupColumn(columnName).visit(visitor);
+                        }
+                        break;
+                    default:
+                        throw new RuntimeException("never reach here");
+                }
+                return visitor.getByteArray();
+            }
+        },
+        JSON {
+            @Override
+            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns) {
+                S3PerRecordOutputColumnVisitor visitor;
+                switch(mode) {
+                    case SINGLE_COLUMN:
+                        visitor = new JsonSingleColumnVisitor(reader);
+                        schema.lookupColumn(dataColumns.get(0)).visit(visitor);
+                        break;
+                    case MULTI_COLUMN:
+                        visitor = new JsonMultiColumnVisitor(reader);
+                        for (String columnName : dataColumns) {
+                            schema.lookupColumn(columnName).visit(visitor);
+                        }
+                        break;
+                    default:
+                        throw new RuntimeException("never reach here");
+                }
+                return visitor.getByteArray();
+            }
+        };
+
+        public abstract byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns);
 
         @JsonValue
         @Override
@@ -317,6 +351,8 @@ public class S3PerRecordOutputPlugin
             switch(name) {
                 case "msgpack":
                     return MSGPACK;
+                case "json":
+                    return JSON;
                 default:
                     throw new ConfigException(String.format("Unknown format '%s'. Supported formats are msgpack only", name));
             }
@@ -343,7 +379,7 @@ public class S3PerRecordOutputPlugin
                 case "multi_column":
                     return MULTI_COLUMN;
                 default:
-                    throw new ConfigException(String.format("Unknown mode '%s'. Supported formats are single_column, multi_column", name));
+                    throw new ConfigException(String.format("Unknown mode '%s'. Supported modes are single_column, multi_column", name));
             }
         }
     }

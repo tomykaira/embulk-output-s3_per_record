@@ -1,10 +1,7 @@
-package org.embulk.output.s3_per_record;
+package org.embulk.output.s3_per_record.visitor;
 
-import org.embulk.output.s3_per_record.S3PerRecordOutputColumnVisitor;
 import org.embulk.spi.Column;
-import org.embulk.spi.ColumnVisitor;
 import org.embulk.spi.PageReader;
-import org.embulk.spi.time.Timestamp;
 import org.msgpack.core.MessageBufferPacker;
 import org.msgpack.core.MessagePack;
 import org.msgpack.value.Value;
@@ -16,7 +13,7 @@ public class MessagePackMultiColumnVisitor implements S3PerRecordOutputColumnVis
     final PageReader reader;
     public final ValueFactory.MapBuilder builder;
 
-    MessagePackMultiColumnVisitor(PageReader reader) {
+    public MessagePackMultiColumnVisitor(PageReader reader) {
         this.reader = reader;
         this.builder = new ValueFactory.MapBuilder();
     }

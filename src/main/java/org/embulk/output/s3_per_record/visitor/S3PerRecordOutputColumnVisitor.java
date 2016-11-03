@@ -1,4 +1,4 @@
-package org.embulk.output.s3_per_record;
+package org.embulk.output.s3_per_record.visitor;
 
 import org.embulk.spi.ColumnVisitor;
 
