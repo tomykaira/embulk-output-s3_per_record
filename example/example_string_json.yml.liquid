@@ -1,0 +1,16 @@
+in:
+  type: file
+  path_prefix: "example_string.json"
+  parser:
+    type: jsonl
+    columns:
+      - {name: "key", type: "string"}
+      - {name: "data", type: "string"}
+
+out:
+  type: s3_per_record
+  data_columns: [data]
+  mode: single_column
+  bucket: {{ env.S3_BUCKET }}
+  key: "${key}"
+  serializer: json

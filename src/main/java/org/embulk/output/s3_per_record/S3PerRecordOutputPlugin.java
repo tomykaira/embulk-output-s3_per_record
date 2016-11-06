@@ -1,23 +1,28 @@
 package org.embulk.output.s3_per_record;
 
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
-
-import javax.validation.constraints.NotNull;
-
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.transfer.TransferManager;
+import com.amazonaws.services.s3.transfer.Upload;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+import com.google.common.base.Optional;
 import org.embulk.config.Config;
 import org.embulk.config.ConfigDefault;
 import org.embulk.config.ConfigDiff;
+import org.embulk.config.ConfigException;
 import org.embulk.config.ConfigSource;
 import org.embulk.config.Task;
 import org.embulk.config.TaskReport;
 import org.embulk.config.TaskSource;
+import org.embulk.output.s3_per_record.visitor.JsonMultiColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.JsonSingleColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.MessagePackMultiColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.MessagePackSingleColumnVisitor;
+import org.embulk.output.s3_per_record.visitor.S3PerRecordOutputColumnVisitor;
 import org.embulk.spi.Column;
 import org.embulk.spi.Exec;
 import org.embulk.spi.OutputPlugin;
@@ -25,16 +30,19 @@ import org.embulk.spi.Page;
 import org.embulk.spi.PageReader;
 import org.embulk.spi.Schema;
 import org.embulk.spi.TransactionalPageOutput;
-
-import com.amazonaws.auth.AWSCredentials;
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.amazonaws.services.s3.transfer.TransferManager;
-import com.amazonaws.services.s3.transfer.Upload;
-import com.amazonaws.util.Base64;
-import com.google.common.base.Optional;
+import org.embulk.spi.time.TimestampFormatter;
+import org.embulk.spi.util.Timestamps;
 import org.slf4j.Logger;
+
+import javax.validation.constraints.NotNull;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 
 public class S3PerRecordOutputPlugin
@@ -50,7 +58,7 @@ public class S3PerRecordOutputPlugin
     private static long startTime = System.currentTimeMillis();
 
     public interface PluginTask
-            extends Task
+            extends Task, TimestampFormatter.Task
     {
         // S3 bucket name.
         @Config("bucket")
@@ -61,8 +69,9 @@ public class S3PerRecordOutputPlugin
         String getKey();
 
         // Column name.
-        @Config("data_column")
-        String getDataColumn();
+        @Config("data_columns")
+        @ConfigDefault("[]")
+        List<String> getDataColumns();
 
         // AWS access key id.
         @Config("aws_access_key_id")
@@ -74,16 +83,27 @@ public class S3PerRecordOutputPlugin
         @ConfigDefault("null")
         Optional<String> getAwsSecretAccessKey();
 
-        // Enable Base64 decoding
-        @Config("base64")
-        @ConfigDefault("false")
-        boolean getBase64();
+        @Config("serializer")
+        @ConfigDefault("msgpack")
+        Serializer getSerializer();
+
+        @Config("mode")
+        @ConfigDefault("multi_column")
+        Mode getMode();
 
         // Set retry limit. Default is 2.
         @Config("retry_limit")
         @ConfigDefault("2")
         Integer getRetryLimit();
+
+        @Config("column_options")
+        @ConfigDefault("{}")
+        Map<String, TimestampColumnOption> getColumnOptions();
     }
+
+    public interface TimestampColumnOption
+            extends Task, TimestampFormatter.TimestampColumnOption
+    { }
 
     @Override
     public ConfigDiff transaction(ConfigSource config,
@@ -124,18 +144,22 @@ public class S3PerRecordOutputPlugin
         private PageReader pageReader;
         private final String bucket;
         private final List<KeyPart> keyPattern;
-        private final Column dataColumn;
+        private final List<String> dataColumns;
         private final Schema schema;
-        private final boolean decodeBase64;
         private final int retryLimit;
+        private final Serializer serializer;
+        private final Mode mode;
+        private final TimestampFormatter[] timestampFormatters;
 
         public S3PerRecordPageOutput(PluginTask task, Schema schema) {
             this.schema = schema;
             bucket = task.getBucket();
             keyPattern = makeKeyPattern(task.getKey());
-            dataColumn = schema.lookupColumn(task.getDataColumn());
-            decodeBase64 = task.getBase64();
+            dataColumns = task.getDataColumns();
             retryLimit = task.getRetryLimit();
+            serializer = task.getSerializer();
+            mode = task.getMode();
+            timestampFormatters = Timestamps.newTimestampColumnFormatters(task, schema, task.getColumnOptions());
 
             AWSCredentials credentials;
             if (task.getAwsAccessKeyId().isPresent() && task.getAwsSecretAccessKey().isPresent()) {
@@ -176,15 +200,9 @@ public class S3PerRecordOutputPlugin
             pageReader.setPage(page);
 
             while (pageReader.nextRecord()) {
-                String key = buildKey(pageReader);
+                final String key = buildKey(pageReader);
+                final byte[] payloadBytes = serializer.serialize(mode, pageReader, schema, dataColumns, timestampFormatters);
 
-                String payload = pageReader.getString(dataColumn);
-                byte[] payloadBytes;
-                if (decodeBase64) {
-                    payloadBytes = Base64.decode(payload);
-                } else {
-                    payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
-                }
                 ObjectMetadata metadata = new ObjectMetadata();
                 metadata.setContentLength(payloadBytes.length);
 
@@ -284,6 +302,98 @@ public class S3PerRecordOutputPlugin
         @Override
         public String resolve(@NotNull PageReader reader) {
             return reader.getString(column);
+        }
+    }
+
+    public enum Serializer {
+        MSGPACK {
+            @Override
+            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns, TimestampFormatter[] timestampFormatters) {
+                S3PerRecordOutputColumnVisitor visitor;
+                switch(mode) {
+                    case SINGLE_COLUMN:
+                        visitor = new MessagePackSingleColumnVisitor(reader, timestampFormatters);
+                        schema.lookupColumn(dataColumns.get(0)).visit(visitor);
+                        break;
+                    case MULTI_COLUMN:
+                        visitor = new MessagePackMultiColumnVisitor(reader, timestampFormatters);
+                        for (String columnName : dataColumns) {
+                            schema.lookupColumn(columnName).visit(visitor);
+                        }
+                        break;
+                    default:
+                        throw new RuntimeException("never reach here");
+                }
+                return visitor.getByteArray();
+            }
+        },
+        JSON {
+            @Override
+            public byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns, TimestampFormatter[] timestampFormatters) {
+                S3PerRecordOutputColumnVisitor visitor;
+                switch(mode) {
+                    case SINGLE_COLUMN:
+                        visitor = new JsonSingleColumnVisitor(reader, timestampFormatters);
+                        schema.lookupColumn(dataColumns.get(0)).visit(visitor);
+                        break;
+                    case MULTI_COLUMN:
+                        visitor = new JsonMultiColumnVisitor(reader, timestampFormatters);
+                        for (String columnName : dataColumns) {
+                            schema.lookupColumn(columnName).visit(visitor);
+                        }
+                        break;
+                    default:
+                        throw new RuntimeException("never reach here");
+                }
+                return visitor.getByteArray();
+            }
+        };
+
+        public abstract byte[] serialize(Mode mode, PageReader reader, Schema schema, List<String> dataColumns, TimestampFormatter[] timestampFormatters);
+
+        @JsonValue
+        @Override
+        public String toString()
+        {
+            return name().toLowerCase(Locale.ENGLISH);
+        }
+
+        @JsonCreator
+        public static Serializer fromString(String name)
+        {
+            switch(name) {
+                case "msgpack":
+                    return MSGPACK;
+                case "json":
+                    return JSON;
+                default:
+                    throw new ConfigException(String.format("Unknown format '%s'. Supported formats are msgpack only", name));
+            }
+        }
+    }
+
+    public enum Mode {
+        SINGLE_COLUMN,
+        MULTI_COLUMN;
+
+        @JsonValue
+        @Override
+        public String toString()
+        {
+            return name().toLowerCase(Locale.ENGLISH);
+        }
+
+        @JsonCreator
+        public static Mode fromString(String name)
+        {
+            switch(name) {
+                case "single_column":
+                    return SINGLE_COLUMN;
+                case "multi_column":
+                    return MULTI_COLUMN;
+                default:
+                    throw new ConfigException(String.format("Unknown mode '%s'. Supported modes are single_column, multi_column", name));
+            }
         }
     }
 }

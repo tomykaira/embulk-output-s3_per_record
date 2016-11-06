@@ -1,0 +1,18 @@
+in:
+  type: file
+  path_prefix: "example_timestamp.json"
+  parser:
+    type: jsonl
+    columns:
+      - {name: "key", type: "string"}
+      - {name: "data", type: "timestamp", format: "%Y-%m-%d %H:%M:%S", timezone: "Asia/Tokyo"}
+
+out:
+  type: s3_per_record
+  data_columns: [data]
+  mode: single_column
+  bucket: {{ env.S3_BUCKET }}
+  key: "${key}"
+  serializer: msgpack
+  column_options:
+    data: {format: "%Y/%m/%d %H:%M:%S %z"}

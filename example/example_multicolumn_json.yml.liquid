@@ -1,0 +1,25 @@
+in:
+  type: file
+  path_prefix: "example_multicolumn.json"
+  parser:
+    type: jsonl
+    columns:
+      - {name: "key", type: "string"}
+      - {name: "data1", type: "json"}
+      - {name: "data2", type: "json"}
+      - {name: "data3", type: "long"}
+      - {name: "data4", type: "timestamp", format: "%Y-%m-%d %H:%M:%S", timezone: "Asia/Tokyo"}
+
+out:
+  type: s3_per_record
+  data_columns:
+    - data1
+    - data2
+    - data3
+    - data4
+  mode: multi_column
+  bucket: {{ env.S3_BUCKET }}
+  key: "${key}"
+  serializer: json
+  column_options:
+    data4: {format: "%Y/%m/%d %H:%M:%S %z", timezone: "Asia/Tokyo"}

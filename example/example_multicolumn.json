@@ -1,0 +1,3 @@
+{"key": "test_key_multi1", "data1": {"a": 1, "b": 2, "c": 3}, "data2": [1, 2], "data3": 42, "data4": "2016-10-01 10:21:00"}
+{"key": "test_key_multi2", "data1": {"a": 4, "b": 5, "c": 6}, "data2": [2, 4], "data3": 42, "data4": "2016-10-01 11:21:00"}
+{"key": "test_key_multi3", "data1": {"a": 7, "b": 8, "c": 9}, "data2": [4, 8], "data3": 42, "data4": "2016-10-01 12:21:00"}
